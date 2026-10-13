@@ -4,7 +4,7 @@ AI-powered command correction and generation for ZSH — inspired by [thefuck](h
 
 Type `fuck` to fix the last command, or `fuck <natural language>` to generate one. Cycle candidates with ↑ / ↓, edit with Tab, and get warned when a suggestion looks destructive.
 
-![Demo](https://i.imgur.com/YtYsoNu.gif)
+![Demo](https://i.imgur.com/dGkK5Bm.gif)
 
 ## Features
 
