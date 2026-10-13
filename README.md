@@ -16,17 +16,19 @@ Type `fuck` to fix the last command, or `fuck <natural language>` to generate on
 | `Esc` / `Ctrl+C` / `Ctrl+G` | Cancel selection |
 | `Esc Esc` | Quick-fix the previous command (disable with `THEFUCKPLUS_ESC_ESC=0`) |
 
-**Safety:** candidates are scored for destructive risk (model + local heuristics). Risky ones show a bright-yellow `⚠` hint (dim yellow when unselected).
+**Agent (file reading):** when enabled (default), the model may call `read_file` / `list_dir` under your current working directory — e.g. read `package.json` after `npm run build` fails because the script is actually `build:h5`.
+
+**Safety:** candidates are scored for destructive risk (model + local heuristics). Risky ones show a bright-yellow `⚠` hint (dim yellow when unselected). Sensitive files (`.env`, keys, credentials, …) are blocked unless you opt in.
 
 **First run:** if AI is not configured, `thefuckplus configure` launches automatically.
 
 ## Demo
 
 ```text
-$ wg show
-Unable to access interface wg0: Operation not permitted
+$ npm run build
+npm ERR! Missing script: "build"
 $ fuck
-# → sudo wg show   (↑↓ for more)
+# Agent reads package.json → npm run build:h5
 
 $ fuck find files larger than 100mb
 # → find ~ -type f -size +100M
@@ -92,12 +94,30 @@ model: "gpt-4o-mini"
 execute_mode: confirm     # confirm | execute
 max_candidates: 5
 timeout_sec: 30
+agent:
+  enabled: true
+  max_rounds: 4
+  max_file_bytes: 32768
+  max_list_entries: 100
+  allow_sensitive: false  # set true to allow .env / keys (still sandboxed to CWD)
+  extra_allow: []         # e.g. [".env.example"]
+  extra_deny: []          # extra deny globs (always applied)
 ```
 
 | `execute_mode` | Enter |
 |----------------|--------|
 | `confirm` (default) | Leave the command in the buffer so you can review/edit |
 | `execute` | Run the selected candidate immediately; **Tab** still only inserts |
+
+### Agent security
+
+- **Sandbox:** tools only access paths under the process CWD (symlink escapes denied).
+- **Default deny:** `.env` / `.env.*`, `*.pem` / `*.key`, SSH key names, `.npmrc`, `.pypirc`, `credentials.json`, `*secret*`, `.aws/**`, `.gnupg/**`, `.ssh/**`, `config.yaml`, and similar.
+- **`extra_allow`:** override default deny for specific relative globs (e.g. `.env.example`).
+- **`extra_deny`:** always wins over allow / `allow_sensitive`.
+- **Prompt injection:** file and command output are wrapped as untrusted data; the system prompt forbids following instructions inside them and forbids putting secrets into candidate commands.
+
+Requires an OpenAI-compatible endpoint that supports `tools` / `tool_calls`. If the endpoint rejects tools, thefuckplus falls back to single-shot completion (no file reads).
 
 Presets:
 
@@ -108,7 +128,9 @@ Presets:
 ## CLI
 
 ```bash
-thefuckplus fix --command "git push" --exit 1
+thefuckplus fix --command "npm run build" --exit 1
+thefuckplus fix --command "npm run build" --exit 1 --output 'Missing script: "build"'
+thefuckplus fix --command "npm run build" --exit 1 --output-file /tmp/err.txt
 thefuckplus generate --query "find files larger than 100mb"
 thefuckplus configure
 thefuckplus version
@@ -139,6 +161,10 @@ If unconfigured: exit code `3`, stderr contains `need_config`.
 | `THEFUCKPLUS_BIN` | Binary name/path (default: `thefuckplus`) |
 | `THEFUCKPLUS_ESC_ESC` | Set to `0` to disable Esc Esc quick-fix |
 
+### Optional command output
+
+Interactive ZSH cannot safely tee every command without breaking the TTY. The plugin exposes `_THEFUCKPLUS_LAST_OUTPUT`; if you set it (e.g. from a wrapper) before invoking `fuck`, it is passed as `--output`. File reading usually works without it.
+
 ## Requirements
 
 - ZSH
@@ -157,9 +183,11 @@ go build -o /tmp/thefuckplus ./cmd/thefuckplus
 thefuckplus/
 ├── cmd/thefuckplus/     # entrypoint
 ├── internal/
+│   ├── agent/           # multi-turn tool loop
 │   ├── cli/             # subcommands
 │   ├── config/          # YAML + interactive setup
 │   ├── context/         # cwd / OS / command context
+│   ├── fsguard/         # path sandbox + sensitive deny
 │   ├── llm/             # OpenAI-compatible client
 │   ├── prompt/          # fix / generate prompts
 │   └── safety/          # destructive-command heuristics

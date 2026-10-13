@@ -27,28 +27,64 @@ type Candidate struct {
 	Warning     string `json:"warning,omitempty"`
 }
 
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
+type Tool struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
 }
 
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type ToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type Message struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+}
+
+type chatRequest struct {
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature"`
+	Tools       []Tool    `json:"tools,omitempty"`
+	ToolChoice  any       `json:"tool_choice,omitempty"`
 }
 
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message Message `json:"message"`
+		Finish  string  `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
+// ChatResult is one assistant turn (content and/or tool calls).
+type ChatResult struct {
+	Message      Message
+	FinishReason string
+	RawBody      string
+	StatusCode   int
+}
+
 func New(cfg config.Config) *Client {
-	timeout := time.Duration(cfg.TimeoutSec) * time.Second
+	timeout := time.Duration(cfg.HTTPTimeout()) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -61,13 +97,32 @@ func New(cfg config.Config) *Client {
 }
 
 func (c *Client) Complete(ctx context.Context, system, user string) ([]Candidate, error) {
+	messages := []Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	}
+	res, err := c.Chat(ctx, messages, nil)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(res.Message.Content)
+	candidates := ParseCandidates(content, c.cfg.MaxCandidates)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("could not parse candidates from llm output: %q", truncate(content, 200))
+	}
+	return enrichSafety(candidates), nil
+}
+
+// Chat sends a multi-turn chat request, optionally with tools.
+func (c *Client) Chat(ctx context.Context, messages []Message, tools []Tool) (*ChatResult, error) {
 	reqBody := chatRequest{
-		Model: c.cfg.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+		Model:       c.cfg.Model,
+		Messages:    messages,
 		Temperature: 0.2,
+	}
+	if len(tools) > 0 {
+		reqBody.Tools = tools
+		reqBody.ToolChoice = "auto"
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -94,8 +149,10 @@ func (c *Client) Complete(ctx context.Context, system, user string) ([]Candidate
 	if err != nil {
 		return nil, err
 	}
+	raw := string(body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return &ChatResult{RawBody: raw, StatusCode: resp.StatusCode},
+			fmt.Errorf("llm http %d: %s", resp.StatusCode, strings.TrimSpace(raw))
 	}
 
 	var parsed chatResponse
@@ -109,12 +166,12 @@ func (c *Client) Complete(ctx context.Context, system, user string) ([]Candidate
 		return nil, fmt.Errorf("llm returned no choices")
 	}
 
-	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
-	candidates := ParseCandidates(content, c.cfg.MaxCandidates)
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("could not parse candidates from llm output: %q", truncate(content, 200))
-	}
-	return enrichSafety(candidates), nil
+	return &ChatResult{
+		Message:      parsed.Choices[0].Message,
+		FinishReason: parsed.Choices[0].Finish,
+		RawBody:      raw,
+		StatusCode:   resp.StatusCode,
+	}, nil
 }
 
 var codeFence = regexp.MustCompile("(?s)```(?:json|shell|bash|zsh)?\\s*(.*?)```")
@@ -128,6 +185,11 @@ func enrichSafety(in []Candidate) []Candidate {
 		out = append(out, c)
 	}
 	return out
+}
+
+// EnrichSafety applies local destructive heuristics (exported for agent package).
+func EnrichSafety(in []Candidate) []Candidate {
+	return enrichSafety(in)
 }
 
 func ParseCandidates(content string, max int) []Candidate {
@@ -210,6 +272,7 @@ func normalizeCandidates(in []Candidate, max int) []Candidate {
 	seen := make(map[string]struct{})
 	var out []Candidate
 	for _, c := range in {
+		c = unwrapNestedCandidate(c)
 		c.Command = strings.TrimSpace(c.Command)
 		if c.Command == "" {
 			continue
@@ -224,6 +287,26 @@ func normalizeCandidates(in []Candidate, max int) []Candidate {
 		}
 	}
 	return out
+}
+
+// unwrapNestedCandidate fixes models that put a JSON object string into "command".
+func unwrapNestedCandidate(c Candidate) Candidate {
+	cmd := strings.TrimSpace(c.Command)
+	if !strings.HasPrefix(cmd, "{") {
+		return c
+	}
+	var inner Candidate
+	if err := json.Unmarshal([]byte(cmd), &inner); err != nil || strings.TrimSpace(inner.Command) == "" {
+		return c
+	}
+	if !c.Destructive && inner.Destructive {
+		c.Destructive = true
+	}
+	if c.Warning == "" {
+		c.Warning = inner.Warning
+	}
+	c.Command = inner.Command
+	return c
 }
 
 func looksLikeCommand(s string) bool {

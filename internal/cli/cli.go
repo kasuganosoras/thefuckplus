@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kasuganosoras/thefuckplus/internal/agent"
 	"github.com/kasuganosoras/thefuckplus/internal/config"
 	appctx "github.com/kasuganosoras/thefuckplus/internal/context"
 	"github.com/kasuganosoras/thefuckplus/internal/llm"
-	"github.com/kasuganosoras/thefuckplus/internal/prompt"
 )
 
 const Version = "0.1.0"
@@ -55,8 +55,8 @@ func Run(args []string) int {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage:
-  thefuckplus fix [--command CMD] [--exit N]
-  thefuckplus generate --query "natural language"
+  thefuckplus fix [--command CMD] [--exit N] [--output TEXT|--output-file PATH]
+  thefuckplus generate --query "natural language" [--output TEXT|--output-file PATH]
   thefuckplus configure
   thefuckplus version`)
 }
@@ -75,7 +75,7 @@ func loadConfigOrHint() (config.Config, int) {
 }
 
 func runFix(args []string) int {
-	cmd, exitCode, err := parseFixFlags(args)
+	cmd, exitCode, output, err := parseFixFlags(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 2
@@ -89,13 +89,12 @@ func runFix(args []string) int {
 		return 1
 	}
 
-	ctxInfo := appctx.Collect(cmd, exitCode, "")
-	system, user := prompt.FixMessages(ctxInfo, cfg.MaxCandidates)
-	return completeAndPrint(cfg, "fix", system, user)
+	ctxInfo := appctx.CollectWithOutput(cmd, exitCode, "", output)
+	return completeAndPrint(cfg, "fix", ctxInfo)
 }
 
 func runGenerate(args []string) int {
-	query, err := parseGenerateFlags(args)
+	query, output, err := parseGenerateFlags(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 2
@@ -109,14 +108,12 @@ func runGenerate(args []string) int {
 		return 2
 	}
 
-	ctxInfo := appctx.Collect("", 0, query)
-	system, user := prompt.GenerateMessages(ctxInfo, cfg.MaxCandidates)
-	return completeAndPrint(cfg, "generate", system, user)
+	ctxInfo := appctx.CollectWithOutput("", 0, query, output)
+	return completeAndPrint(cfg, "generate", ctxInfo)
 }
 
-func completeAndPrint(cfg config.Config, mode, system, user string) int {
-	client := llm.New(cfg)
-	candidates, err := client.Complete(context.Background(), system, user)
+func completeAndPrint(cfg config.Config, mode string, info appctx.RequestContext) int {
+	candidates, err := agent.Run(context.Background(), cfg, mode, info)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llm: %v\n", err)
 		return 1
@@ -135,50 +132,81 @@ func completeAndPrint(cfg config.Config, mode, system, user string) int {
 	return 0
 }
 
-func parseFixFlags(args []string) (command string, exitCode int, err error) {
+func parseFixFlags(args []string) (command string, exitCode int, output string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--command", "-c":
 			if i+1 >= len(args) {
-				return "", 0, fmt.Errorf("--command requires a value")
+				return "", 0, "", fmt.Errorf("--command requires a value")
 			}
 			i++
 			command = args[i]
 		case "--exit", "-e":
 			if i+1 >= len(args) {
-				return "", 0, fmt.Errorf("--exit requires a value")
+				return "", 0, "", fmt.Errorf("--exit requires a value")
 			}
 			i++
 			n, e := strconv.Atoi(args[i])
 			if e != nil {
-				return "", 0, fmt.Errorf("invalid --exit: %w", e)
+				return "", 0, "", fmt.Errorf("invalid --exit: %w", e)
 			}
 			exitCode = n
+		case "--output", "-o":
+			if i+1 >= len(args) {
+				return "", 0, "", fmt.Errorf("--output requires a value")
+			}
+			i++
+			output = args[i]
+		case "--output-file":
+			if i+1 >= len(args) {
+				return "", 0, "", fmt.Errorf("--output-file requires a value")
+			}
+			i++
+			data, e := os.ReadFile(args[i])
+			if e != nil {
+				return "", 0, "", fmt.Errorf("read --output-file: %w", e)
+			}
+			output = string(data)
 		default:
-			return "", 0, fmt.Errorf("unknown flag: %s", args[i])
+			return "", 0, "", fmt.Errorf("unknown flag: %s", args[i])
 		}
 	}
-	return command, exitCode, nil
+	return command, exitCode, output, nil
 }
 
-func parseGenerateFlags(args []string) (string, error) {
-	var query string
+func parseGenerateFlags(args []string) (query string, output string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--query", "-q":
 			if i+1 >= len(args) {
-				return "", fmt.Errorf("--query requires a value")
+				return "", "", fmt.Errorf("--query requires a value")
 			}
 			i++
 			query = args[i]
+		case "--output", "-o":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--output requires a value")
+			}
+			i++
+			output = args[i]
+		case "--output-file":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("--output-file requires a value")
+			}
+			i++
+			data, e := os.ReadFile(args[i])
+			if e != nil {
+				return "", "", fmt.Errorf("read --output-file: %w", e)
+			}
+			output = string(data)
 		default:
 			// Allow trailing words as query for convenience.
 			if query == "" {
 				query = strings.Join(args[i:], " ")
-				return query, nil
+				return query, output, nil
 			}
-			return "", fmt.Errorf("unknown flag: %s", args[i])
+			return "", "", fmt.Errorf("unknown flag: %s", args[i])
 		}
 	}
-	return query, nil
+	return query, output, nil
 }

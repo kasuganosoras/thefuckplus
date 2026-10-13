@@ -4,6 +4,9 @@
 typeset -g _THEFUCKPLUS_PLUGIN_DIR="${${(%):-%x}:A:h}"
 typeset -g _THEFUCKPLUS_LAST_CMD=""
 typeset -g _THEFUCKPLUS_LAST_EXIT=0
+# Optional prior command output (stdout/stderr). Interactive ZSH cannot safely
+# tee every command; set this manually or via a wrapper if you have output.
+typeset -g _THEFUCKPLUS_LAST_OUTPUT=""
 typeset -ga _thefuckplus_candidates
 typeset -ga _thefuckplus_destructive
 typeset -ga _thefuckplus_warnings
@@ -34,11 +37,14 @@ typeset -g _THEFUCKPLUS_WARN_ICON="⚠"
 
 _thefuckplus_preexec() {
   _THEFUCKPLUS_LAST_CMD="$1"
+  # Clear stale output unless the user/wrapper refreshed it for this command.
+  _THEFUCKPLUS_LAST_OUTPUT=""
 }
 
 _thefuckplus_precmd() {
   _THEFUCKPLUS_LAST_EXIT=$?
 }
+
 
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( $+functions[add-zsh-hook] )); then
@@ -516,13 +522,17 @@ _thefuckplus_invoke() {
   errfile="$(mktemp "${TMPDIR:-/tmp}/thefuckplus.XXXXXX")"
   outfile="$(mktemp "${TMPDIR:-/tmp}/thefuckplus.out.XXXXXX")"
 
+  local -a call_args
   if [[ "$mode" == "generate" ]]; then
-    _thefuckplus_call_with_spinner "$outfile" "$errfile" generate --query "$*"
+    call_args=(generate --query "$*")
   else
-    _thefuckplus_call_with_spinner "$outfile" "$errfile" fix \
-      --command "$(_thefuckplus_prev_command)" \
-      --exit "${_THEFUCKPLUS_LAST_EXIT:-0}"
+    call_args=(fix --command "$(_thefuckplus_prev_command)" --exit "${_THEFUCKPLUS_LAST_EXIT:-0}")
   fi
+  if [[ -n "${_THEFUCKPLUS_LAST_OUTPUT}" ]]; then
+    call_args+=(--output "${_THEFUCKPLUS_LAST_OUTPUT}")
+  fi
+
+  _thefuckplus_call_with_spinner "$outfile" "$errfile" "${call_args[@]}"
   rc=$_thefuckplus_spinner_rc
   out="$_thefuckplus_spinner_out"
 
@@ -532,13 +542,7 @@ _thefuckplus_invoke() {
     _thefuckplus_bin configure </dev/tty >/dev/tty 2>/dev/tty
     rc=$?
     if (( rc == 0 )); then
-      if [[ "$mode" == "generate" ]]; then
-        _thefuckplus_call_with_spinner "$outfile" "$errfile" generate --query "$*"
-      else
-        _thefuckplus_call_with_spinner "$outfile" "$errfile" fix \
-          --command "$(_thefuckplus_prev_command)" \
-          --exit "${_THEFUCKPLUS_LAST_EXIT:-0}"
-      fi
+      _thefuckplus_call_with_spinner "$outfile" "$errfile" "${call_args[@]}"
       rc=$_thefuckplus_spinner_rc
       out="$_thefuckplus_spinner_out"
     fi
@@ -608,11 +612,16 @@ fi
 
 # Non-interactive helper: print JSON to stdout.
 fuck() {
+  local -a call_args
   if [[ $# -eq 0 ]]; then
     local cmd="${_THEFUCKPLUS_LAST_CMD}"
     [[ -z "$cmd" ]] && cmd="$(fc -ln -1 2>/dev/null)"
-    _thefuckplus_bin fix --command "$cmd" --exit "${_THEFUCKPLUS_LAST_EXIT:-0}"
+    call_args=(fix --command "$cmd" --exit "${_THEFUCKPLUS_LAST_EXIT:-0}")
   else
-    _thefuckplus_bin generate --query "$*"
+    call_args=(generate --query "$*")
   fi
+  if [[ -n "${_THEFUCKPLUS_LAST_OUTPUT}" ]]; then
+    call_args+=(--output "${_THEFUCKPLUS_LAST_OUTPUT}")
+  fi
+  _thefuckplus_bin "${call_args[@]}"
 }

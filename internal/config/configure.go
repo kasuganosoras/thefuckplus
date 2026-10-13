@@ -73,6 +73,22 @@ func ConfigureInteractive() (Config, error) {
 		cfg.ExecuteMode = ExecuteConfirm
 	}
 
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Agent file reading: the AI may read files under your CWD")
+	fmt.Fprintln(os.Stderr, "(e.g. package.json) to improve fixes. Sensitive paths (.env, keys)")
+	fmt.Fprintln(os.Stderr, "are blocked by default.")
+	sensitive, err := prompt(in, "Allow reading sensitive files? [y/N]", "N")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Agent = DefaultAgent()
+	switch strings.ToLower(strings.TrimSpace(sensitive)) {
+	case "y", "yes":
+		cfg.Agent.AllowSensitive = true
+	default:
+		cfg.Agent.AllowSensitive = false
+	}
+
 	if err := Save(cfg); err != nil {
 		return Config{}, err
 	}

@@ -22,14 +22,37 @@ var (
 	ErrNotConfigured = errors.New("need_config")
 )
 
+type AgentConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	MaxRounds      int      `yaml:"max_rounds"`
+	MaxFileBytes   int      `yaml:"max_file_bytes"`
+	MaxListEntries int      `yaml:"max_list_entries"`
+	AllowSensitive bool     `yaml:"allow_sensitive"`
+	ExtraAllow     []string `yaml:"extra_allow"`
+	ExtraDeny      []string `yaml:"extra_deny"`
+}
+
 type Config struct {
-	Provider      string `yaml:"provider"`
-	APIKey        string `yaml:"api_key"`
-	BaseURL       string `yaml:"base_url"`
-	Model         string `yaml:"model"`
-	ExecuteMode   string `yaml:"execute_mode"`
-	MaxCandidates int    `yaml:"max_candidates"`
-	TimeoutSec    int    `yaml:"timeout_sec"`
+	Provider      string      `yaml:"provider"`
+	APIKey        string      `yaml:"api_key"`
+	BaseURL       string      `yaml:"base_url"`
+	Model         string      `yaml:"model"`
+	ExecuteMode   string      `yaml:"execute_mode"`
+	MaxCandidates int         `yaml:"max_candidates"`
+	TimeoutSec    int         `yaml:"timeout_sec"`
+	Agent         AgentConfig `yaml:"agent"`
+}
+
+func DefaultAgent() AgentConfig {
+	return AgentConfig{
+		Enabled:        true,
+		MaxRounds:      4,
+		MaxFileBytes:   32768,
+		MaxListEntries: 100,
+		AllowSensitive: false,
+		ExtraAllow:     nil,
+		ExtraDeny:      nil,
+	}
 }
 
 func Default() Config {
@@ -40,6 +63,7 @@ func Default() Config {
 		ExecuteMode:   ExecuteConfirm,
 		MaxCandidates: 5,
 		TimeoutSec:    30,
+		Agent:         DefaultAgent(),
 	}
 }
 
@@ -128,6 +152,22 @@ func (c *Config) applyDefaults() {
 	if c.TimeoutSec <= 0 {
 		c.TimeoutSec = d.TimeoutSec
 	}
+	c.Agent.applyDefaults()
+}
+
+func (a *AgentConfig) applyDefaults() {
+	d := DefaultAgent()
+	if a.MaxRounds <= 0 {
+		a.MaxRounds = d.MaxRounds
+	}
+	if a.MaxFileBytes <= 0 {
+		a.MaxFileBytes = d.MaxFileBytes
+	}
+	if a.MaxListEntries <= 0 {
+		a.MaxListEntries = d.MaxListEntries
+	}
+	// Enabled: Load() starts from Default() (true). Omitted agent key keeps it.
+	// Explicit `enabled: false` in YAML disables. ExtraAllow/ExtraDeny stay as-is.
 }
 
 func (c Config) IsConfigured() bool {
@@ -139,6 +179,27 @@ func (c Config) IsConfigured() bool {
 		return true
 	}
 	return c.APIKey != ""
+}
+
+// HTTPTimeout returns the HTTP client timeout, scaled for agent rounds.
+func (c Config) HTTPTimeout() int {
+	sec := c.TimeoutSec
+	if sec <= 0 {
+		sec = 30
+	}
+	if !c.Agent.Enabled {
+		return sec
+	}
+	rounds := c.Agent.MaxRounds
+	if rounds <= 0 {
+		rounds = 4
+	}
+	total := sec * (rounds + 1)
+	const capSec = 300
+	if total > capSec {
+		return capSec
+	}
+	return total
 }
 
 func Save(cfg Config) error {

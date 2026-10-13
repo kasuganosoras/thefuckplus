@@ -49,3 +49,11 @@ func TestEnrichSafety(t *testing.T) {
 		t.Fatalf("local heuristic should mark destructive: %#v", got)
 	}
 }
+
+func TestUnwrapNestedCommandJSON(t *testing.T) {
+	in := `[{"command":"{\"command\":\"npm run build:h5\",\"destructive\":false,\"warning\":\"\"}","destructive":false}]`
+	got := ParseCandidates(in, 5)
+	if len(got) != 1 || got[0].Command != "npm run build:h5" {
+		t.Fatalf("unexpected unwrap: %#v", got)
+	}
+}
