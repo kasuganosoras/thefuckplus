@@ -4,6 +4,8 @@ AI-powered command correction and generation for ZSH — inspired by [thefuck](h
 
 Type `fuck` to fix the last command, or `fuck <natural language>` to generate one. Cycle candidates with ↑ / ↓, edit with Tab, and get warned when a suggestion looks destructive.
 
+![Demo](https://i.imgur.com/YtYsoNu.gif)
+
 ## Features
 
 | Input / key | Behavior |
@@ -21,18 +23,6 @@ Type `fuck` to fix the last command, or `fuck <natural language>` to generate on
 **Safety:** candidates are scored for destructive risk (model + local heuristics). Risky ones show a bright-yellow `⚠` hint (dim yellow when unselected). Sensitive files (`.env`, keys, credentials, …) are blocked unless you opt in.
 
 **First run:** if AI is not configured, `thefuckplus configure` launches automatically.
-
-## Demo
-
-```text
-$ npm run build
-npm ERR! Missing script: "build"
-$ fuck
-# Agent reads package.json → npm run build:h5
-
-$ fuck find files larger than 100mb
-# → find ~ -type f -size +100M
-```
 
 ## Install
 
